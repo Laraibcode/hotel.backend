@@ -1,15 +1,9 @@
-import { IsString, IsNotEmpty, MinLength, MaxLength, Matches } from 'class-validator';
+﻿import { Module } from '@nestjs/common';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { PrismaModule } from './prisma/prisma.module';
+import { AuthModule } from './auth/auth.module';
+import { OrdersModule } from './orders/orders.module';
+import { AdminModule } from './admin/admin.module';
 
-export class LoginDto {
-  @IsString() @IsNotEmpty() phone: string;
-  @IsString() @MinLength(6) password: string;
-}
-
-export class RegisterDto {
-  @IsString() @IsNotEmpty() nickname: string;
-  @IsString() @IsNotEmpty() phone: string;
-  @IsString() @MinLength(6) password: string;
-  @IsString() @MinLength(6) confirmPassword: string;
-  @IsString() @MinLength(6) @MaxLength(6) @Matches(/^\d{6}$/) securityPin: string;
-  @IsString() @IsNotEmpty() invitationCode: string;
-}
+@Module({ imports: [ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }]), PrismaModule, AuthModule, OrdersModule, AdminModule] })
+export class AppModule {}

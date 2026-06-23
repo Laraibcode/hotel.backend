@@ -1,904 +1,261 @@
-import {
-  Controller, Get, Post, Put, Delete, Body, Param, Query,
-  UseGuards, Request, ParseIntPipe,
-} from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
-import { AuthGuard } from '@nestjs/passport';
-import { PrismaService } from '../prisma/prisma.service';
-import * as bcrypt from 'bcrypt';
-
-// ─── GUARD ────────────────────────────────────────────────────────────────────
-function AdminAuth() {
-  return UseGuards(AuthGuard('admin-jwt'));
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ADMIN DASHBOARD
-// ═══════════════════════════════════════════════════════════════════════════════
-@ApiTags('Admin Dashboard')
-@ApiBearerAuth()
-@AdminAuth()
-@Controller('admin/dashboard')
-export class AdminDashboardController {
-  constructor(private prisma: PrismaService) {}
-
-  @Get('stats')
-  @ApiOperation({ summary: 'Get dashboard statistics' })
-  async getStats() {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const [
-      totalUsers, totalHotels, totalOrders, totalDeposits, totalWithdrawals,
-      todayRegistrations, todayRecharge, todayWithdrawal, pendingDeposits, pendingWithdrawals,
-      totalBalance,
-    ] = await Promise.all([
-      this.prisma.user.count({ where: { userType: 'REGULAR' } }),
-      this.prisma.hotel.count({ where: { isActive: true } }),
-      this.prisma.order.count(),
-      this.prisma.deposit.aggregate({ _sum: { amount: true }, where: { status: 'APPROVED' } }),
-      this.prisma.withdrawal.aggregate({ _sum: { amount: true }, where: { status: 'APPROVED' } }),
-      this.prisma.user.count({ where: { registeredAt: { gte: today } } }),
-      this.prisma.deposit.aggregate({ _sum: { amount: true }, where: { status: 'APPROVED', createdAt: { gte: today } } }),
-      this.prisma.withdrawal.aggregate({ _sum: { amount: true }, where: { status: 'APPROVED', createdAt: { gte: today } } }),
-      this.prisma.deposit.count({ where: { status: 'PENDING' } }),
-      this.prisma.withdrawal.count({ where: { status: 'PENDING' } }),
-      this.prisma.user.aggregate({ _sum: { balance: true } }),
-    ]);
-
-    const completedOrderAmount = await this.prisma.order.aggregate({
-      _sum: { transactionAmount: true },
-      where: { status: 'COMPLETE' },
+"use strict";
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
-
-    return {
-      totalUsers,
-      totalHotels,
-      totalOrders,
-      completedOrderAmount: Number(completedOrderAmount._sum.transactionAmount || 0),
-      totalDepositsAmount: Number(totalDeposits._sum.amount || 0),
-      totalWithdrawalsAmount: Number(totalWithdrawals._sum.amount || 0),
-      todayRegistrations,
-      todayRechargeAmount: Number(todayRecharge._sum.amount || 0),
-      todayWithdrawalAmount: Number(todayWithdrawal._sum.amount || 0),
-      pendingDeposits,
-      pendingWithdrawals,
-      totalBalance: Number(totalBalance._sum.balance || 0),
-    };
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ADMIN MEMBERS
-// ═══════════════════════════════════════════════════════════════════════════════
-@ApiTags('Admin Users')
-@ApiBearerAuth()
-@AdminAuth()
-@Controller('admin/members')
-export class AdminMembersController {
-  constructor(private prisma: PrismaService) {}
-
-  @Get()
-  @ApiOperation({ summary: 'List all members with filters' })
-  async getMembers(
-    @Query('search') search?: string,
-    @Query('vipLevelId') vipLevelId?: string,
-    @Query('userType') userType?: string,
-    @Query('status') status?: string,
-    @Query('referrerId') referrerId?: string,
-    @Query('page') page = '1',
-    @Query('limit') limit = '20',
-  ) {
-    const where: any = {};
-    if (search) where.OR = [
-      { phone: { contains: search } },
-      { nickname: { contains: search } },
-      { invitationCode: { contains: search } },
-    ];
-    if (vipLevelId) where.vipLevelId = parseInt(vipLevelId);
-    if (userType) where.userType = userType;
-    if (status) where.status = status;
-    if (referrerId) where.referrerId = parseInt(referrerId);
-
-    const [members, total] = await Promise.all([
-      this.prisma.user.findMany({
-        where,
-        include: {
-          vipLevel: { select: { id: true, name: true } },
-          referrer: { select: { id: true, nickname: true, phone: true } },
-          _count: { select: { referrals: true } },
-        },
-        orderBy: { registeredAt: 'desc' },
-        skip: (parseInt(page) - 1) * parseInt(limit),
-        take: parseInt(limit),
-      }),
-      this.prisma.user.count({ where }),
-    ]);
-
-    return { members, total, page: parseInt(page), limit: parseInt(limit) };
-  }
-
-  @Post('add')
-  @ApiOperation({ summary: 'Add new member manually' })
-  async addMember(@Body() body: any) {
-    const hashedPassword = await bcrypt.hash(body.password, 12);
-    const hashedPin = await bcrypt.hash(body.securityPin || '123456', 12);
-    const invitationCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-
-    return this.prisma.user.create({
-      data: {
-        phone: body.phone,
-        nickname: body.nickname,
-        password: hashedPassword,
-        withdrawPassword: hashedPin,
-        invitationCode,
-        vipLevelId: body.vipLevelId || 1,
-        referrerId: body.referrerId,
-      },
-    });
-  }
-
-  @Put(':id/edit')
-  @ApiOperation({ summary: 'Edit member basic info' })
-  async editMember(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
-    return this.prisma.user.update({
-      where: { id },
-      data: {
-        phone: body.phone,
-        nickname: body.nickname,
-        creditScore: body.creditScore,
-        vipLevelId: body.vipLevelId,
-        referrerId: body.superiorId,
-      },
-    });
-  }
-
-  @Post(':id/balance-adjustment')
-  @ApiOperation({ summary: 'Add or deduct user balance' })
-  async adjustBalance(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() body: { amount: number; type: 'ADD' | 'DEDUCT'; reason?: string },
-    @Request() req,
-  ) {
-    const user = await this.prisma.user.findUnique({ where: { id } });
-    const adjustAmount = body.type === 'DEDUCT' ? -Math.abs(body.amount) : Math.abs(body.amount);
-
-    await this.prisma.$transaction([
-      this.prisma.user.update({
-        where: { id },
-        data: { balance: { increment: adjustAmount } },
-      }),
-      this.prisma.balanceAdjustment.create({
-        data: {
-          userId: id,
-          adminId: req.user.id,
-          type: body.type,
-          amount: body.amount,
-          reason: body.reason,
-        },
-      }),
-      this.prisma.walletTransaction.create({
-        data: {
-          userId: id,
-          type: 'BALANCE_ADJUSTMENT',
-          state: body.type === 'ADD' ? 'income' : 'expenditure',
-          balanceBefore: Number(user.balance),
-          balanceAfter: Number(user.balance) + adjustAmount,
-          amount: body.amount,
-          description: `Admin balance adjustment: ${body.reason || ''}`,
-        },
-      }),
-    ]);
-
-    return { success: true };
-  }
-
-  @Get(':id/order-slots')
-  @ApiOperation({ summary: 'Get user order timeline slots' })
-  async getOrderSlots(@Param('id', ParseIntPipe) id: number) {
-    const user = await this.prisma.user.findUnique({ where: { id }, include: { vipLevel: true } });
-    const slots = await this.prisma.userOrderSlot.findMany({
-      where: { userId: id },
-      include: { hotel: true },
-    });
-
-    // Build full slot list
-    const allSlots = Array.from({ length: user.vipLevel.dailyOrderVolume }, (_, i) => {
-      const slotNum = i + 1;
-      const pinned = slots.find(s => s.slotNumber === slotNum);
-      return {
-        slotNumber: slotNum,
-        isRandom: pinned ? pinned.isRandom : true,
-        hotel: pinned?.hotel || null,
-        multiplier: pinned?.multiplier || 1,
-      };
-    });
-
-    return {
-      user: { id: user.id, phone: user.phone, nickname: user.nickname },
-      dailyOrderCount: user.dailyOrderCount,
-      dailyOrderLimit: user.vipLevel.dailyOrderVolume,
-      ordersBlocked: user.ordersBlocked,
-      slots: allSlots,
-    };
-  }
-
-  @Post(':id/order-slots/pin')
-  @ApiOperation({ summary: 'Pin a specific hotel to a user order slot' })
-  async pinOrderSlot(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() body: { slotNumber: number; hotelId: number; multiplier: number },
-  ) {
-    return this.prisma.userOrderSlot.upsert({
-      where: { userId_slotNumber: { userId: id, slotNumber: body.slotNumber } },
-      update: {
-        isRandom: false,
-        hotelId: body.hotelId,
-        multiplier: body.multiplier,
-      },
-      create: {
-        userId: id,
-        slotNumber: body.slotNumber,
-        isRandom: false,
-        hotelId: body.hotelId,
-        multiplier: body.multiplier,
-      },
-    });
-  }
-
-  @Post(':id/order-slots/unpin')
-  @ApiOperation({ summary: 'Set slot back to random' })
-  async unpinOrderSlot(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() body: { slotNumber: number },
-  ) {
-    return this.prisma.userOrderSlot.upsert({
-      where: { userId_slotNumber: { userId: id, slotNumber: body.slotNumber } },
-      update: { isRandom: true, hotelId: null },
-      create: { userId: id, slotNumber: body.slotNumber, isRandom: true },
-    });
-  }
-
-  @Post(':id/block-orders')
-  @ApiOperation({ summary: 'Block/unblock all orders for user (Kill Switch)' })
-  async toggleOrderBlock(@Param('id', ParseIntPipe) id: number, @Body() body: { blocked: boolean }) {
-    return this.prisma.user.update({ where: { id }, data: { ordersBlocked: body.blocked } });
-  }
-
-  @Post(':id/reset-orders')
-  @ApiOperation({ summary: 'Reset daily order counter' })
-  async resetOrders(@Param('id', ParseIntPipe) id: number) {
-    return this.prisma.user.update({
-      where: { id },
-      data: { dailyOrderCount: 0, lastOrderResetAt: new Date() },
-    });
-  }
-
-  @Post(':id/commission-settings')
-  @ApiOperation({ summary: 'Override commission rate for specific user' })
-  async setCommission(@Param('id', ParseIntPipe) id: number, @Body() body: { rate: number }) {
-    // Store in VIP override or directly; here we create a custom field approach
-    // For simplicity, we update a note - in production extend schema with commissionOverride
-    return { success: true, note: 'Commission override applied' };
-  }
-
-  @Post(':id/password-change')
-  @ApiOperation({ summary: 'Change user login and withdrawal passwords' })
-  async changePassword(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
-    const data: any = {};
-    if (body.loginPassword) data.password = await bcrypt.hash(body.loginPassword, 12);
-    if (body.withdrawalPassword) data.withdrawPassword = await bcrypt.hash(body.withdrawalPassword, 12);
-    return this.prisma.user.update({ where: { id }, data });
-  }
-
-  @Post(':id/ban')
-  @ApiOperation({ summary: 'Ban user account' })
-  async banUser(@Param('id', ParseIntPipe) id: number) {
-    return this.prisma.user.update({ where: { id }, data: { status: 'BANNED' } });
-  }
-
-  @Post(':id/enable')
-  @ApiOperation({ summary: 'Enable user account' })
-  async enableUser(@Param('id', ParseIntPipe) id: number) {
-    return this.prisma.user.update({ where: { id }, data: { status: 'ENABLED' } });
-  }
-
-  @Post(':id/toggle-transactions')
-  @ApiOperation({ summary: 'Enable/disable transactions for user' })
-  async toggleTransactions(@Param('id', ParseIntPipe) id: number, @Body() body: { enabled: boolean }) {
-    return this.prisma.user.update({ where: { id }, data: { transactionStatus: body.enabled } });
-  }
-
-  @Post(':id/set-test')
-  @ApiOperation({ summary: 'Set user as test user' })
-  async setTest(@Param('id', ParseIntPipe) id: number) {
-    return this.prisma.user.update({ where: { id }, data: { isTestUser: true, userType: 'TEST' } });
-  }
-
-  @Post(':id/set-proxy')
-  @ApiOperation({ summary: 'Set user as proxy/agent' })
-  async setProxy(@Param('id', ParseIntPipe) id: number) {
-    return this.prisma.user.update({ where: { id }, data: { isProxy: true, userType: 'PROXY' } });
-  }
-
-  @Get(':id/team')
-  @ApiOperation({ summary: 'View user downline team' })
-  async getTeam(
-    @Param('id', ParseIntPipe) id: number,
-    @Query('status') status?: string,
-  ) {
-    const where: any = { referrerId: id };
-    if (status) where.status = status;
-    return this.prisma.user.findMany({
-      where,
-      include: { vipLevel: { select: { name: true } } },
-    });
-  }
-
-  @Post(':id/issue-salary')
-  @ApiOperation({ summary: 'Issue today salary to user' })
-  async issueSalary(@Param('id', ParseIntPipe) id: number, @Body() body: { amount: number }) {
-    const user = await this.prisma.user.findUnique({ where: { id } });
-    await this.prisma.$transaction([
-      this.prisma.user.update({ where: { id }, data: { balance: { increment: body.amount } } }),
-      this.prisma.walletTransaction.create({
-        data: {
-          userId: id,
-          type: 'SALARY',
-          state: 'income',
-          balanceBefore: Number(user.balance),
-          balanceAfter: Number(user.balance) + body.amount,
-          amount: body.amount,
-          description: 'Admin issued salary',
-        },
-      }),
-    ]);
-    return { success: true };
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ADMIN FINANCIAL
-// ═══════════════════════════════════════════════════════════════════════════════
-@ApiTags('Admin Financial')
-@ApiBearerAuth()
-@AdminAuth()
-@Controller('admin/financial')
-export class AdminFinancialController {
-  constructor(private prisma: PrismaService) {}
-
-  // Withdrawal Orders
-  @Get('withdrawals')
-  async getWithdrawals(@Query() q: any) {
-    const where: any = {};
-    if (q.search) where.user = { phone: { contains: q.search } };
-    if (q.status) where.status = q.status;
-    if (q.startTime) where.createdAt = { gte: new Date(q.startTime) };
-
-    const [items, total] = await Promise.all([
-      this.prisma.withdrawal.findMany({
-        where,
-        include: { user: { select: { phone: true, nickname: true } } },
-        orderBy: { createdAt: 'desc' },
-        skip: q.page ? (parseInt(q.page) - 1) * 20 : 0,
-        take: 20,
-      }),
-      this.prisma.withdrawal.count({ where }),
-    ]);
-
-    const totals = await this.prisma.withdrawal.aggregate({
-      _sum: { amount: true, handlingFee: true },
-    });
-
-    return { items, total, totalAmount: totals._sum.amount, totalFees: totals._sum.handlingFee };
-  }
-
-  @Post('withdrawals/:id/approve')
-  async approveWithdrawal(@Param('id', ParseIntPipe) id: number, @Request() req) {
-    const withdrawal = await this.prisma.withdrawal.findUnique({ where: { id } });
-    if (withdrawal.status !== 'PENDING') throw new Error('Already processed');
-
-    await this.prisma.$transaction([
-      this.prisma.withdrawal.update({
-        where: { id },
-        data: { status: 'APPROVED', reviewedById: req.user.id, processedAt: new Date() },
-      }),
-      this.prisma.user.update({
-        where: { id: withdrawal.userId },
-        data: {
-          totalWithdrawals: { increment: withdrawal.amount },
-          balance: { decrement: withdrawal.amount },
-        },
-      }),
-      this.prisma.walletTransaction.create({
-        data: {
-          userId: withdrawal.userId,
-          type: 'WITHDRAWAL',
-          state: 'expenditure',
-          balanceBefore: 0, // fetch before in production
-          balanceAfter: 0,
-          amount: Number(withdrawal.amount),
-          description: 'Withdrawal approved',
-          referenceId: String(id),
-        },
-      }),
-    ]);
-    return { success: true };
-  }
-
-  @Post('withdrawals/:id/reject')
-  async rejectWithdrawal(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() body: { reason: string },
-    @Request() req,
-  ) {
-    return this.prisma.withdrawal.update({
-      where: { id },
-      data: {
-        status: 'REJECTED',
-        reviewInfo: body.reason,
-        reviewedById: req.user.id,
-        processedAt: new Date(),
-      },
-    });
-  }
-
-  // Recharge Orders
-  @Get('deposits')
-  async getDeposits(@Query() q: any) {
-    const where: any = {};
-    if (q.search) where.user = { phone: { contains: q.search } };
-    if (q.status) where.status = q.status;
-
-    const [items, total] = await Promise.all([
-      this.prisma.deposit.findMany({
-        where,
-        include: { user: { select: { phone: true, nickname: true } } },
-        orderBy: { createdAt: 'desc' },
-        skip: q.page ? (parseInt(q.page) - 1) * 20 : 0,
-        take: 20,
-      }),
-      this.prisma.deposit.count({ where }),
-    ]);
-
-    const totals = await this.prisma.deposit.aggregate({
-      _sum: { amount: true },
-      where: { status: 'APPROVED' },
-    });
-
-    return { items, total, totalAmount: totals._sum.amount };
-  }
-
-  @Post('deposits/:id/approve')
-  async approveDeposit(@Param('id', ParseIntPipe) id: number, @Request() req) {
-    const deposit = await this.prisma.deposit.findUnique({
-      where: { id },
-      include: { user: true },
-    });
-    if (deposit.status !== 'PENDING') throw new Error('Already processed');
-
-    const balanceBefore = Number(deposit.user.balance);
-
-    await this.prisma.$transaction([
-      this.prisma.deposit.update({
-        where: { id },
-        data: { status: 'APPROVED', reviewedById: req.user.id, processedAt: new Date(), reviewInfo: 'System Recharge' },
-      }),
-      this.prisma.user.update({
-        where: { id: deposit.userId },
-        data: {
-          balance: { increment: deposit.amount },
-          totalDeposits: { increment: deposit.amount },
-        },
-      }),
-      this.prisma.walletTransaction.create({
-        data: {
-          userId: deposit.userId,
-          type: 'DEPOSIT',
-          state: 'income',
-          balanceBefore,
-          balanceAfter: balanceBefore + Number(deposit.amount),
-          amount: Number(deposit.amount),
-          description: 'Deposit approved - System Recharge',
-          referenceId: String(id),
-        },
-      }),
-      this.prisma.pointsRecord.create({
-        data: {
-          userId: deposit.userId,
-          operator: req.user.username,
-          balanceBefore,
-          balanceAfter: balanceBefore + Number(deposit.amount),
-          state: 'Rank up',
-          amount: Number(deposit.amount),
-        },
-      }),
-    ]);
-
-    // Auto upgrade VIP based on total deposits
-    await this.autoUpgradeVip(deposit.userId);
-
-    return { success: true };
-  }
-
-  @Post('deposits/:id/reject')
-  async rejectDeposit(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() body: { reason: string },
-    @Request() req,
-  ) {
-    return this.prisma.deposit.update({
-      where: { id },
-      data: {
-        status: 'REJECTED',
-        reviewInfo: body.reason,
-        reviewedById: req.user.id,
-        processedAt: new Date(),
-      },
-    });
-  }
-
-  // Wallet details
-  @Get('wallet-details')
-  async getWalletDetails(@Query() q: any) {
-    const where: any = {};
-    if (q.search) where.userId = parseInt(q.search);
-    if (q.type) where.type = q.type;
-    if (q.status) where.state = q.status;
-
-    const [items, total] = await Promise.all([
-      this.prisma.walletTransaction.findMany({
-        where,
-        include: { user: { select: { phone: true, nickname: true } } },
-        orderBy: { createdAt: 'desc' },
-        skip: q.page ? (parseInt(q.page) - 1) * 20 : 0,
-        take: 20,
-      }),
-      this.prisma.walletTransaction.count({ where }),
-    ]);
-
-    return { items, total };
-  }
-
-  // Points records
-  @Get('points-records')
-  async getPointsRecords(@Query() q: any) {
-    const [items, total] = await Promise.all([
-      this.prisma.pointsRecord.findMany({
-        include: { user: { select: { phone: true, nickname: true } } },
-        orderBy: { createdAt: 'desc' },
-        skip: q.page ? (parseInt(q.page) - 1) * 20 : 0,
-        take: 20,
-      }),
-      this.prisma.pointsRecord.count(),
-    ]);
-
-    const totals = await this.prisma.pointsRecord.aggregate({
-      _sum: { amount: true },
-    });
-
-    return { items, total, totalPoints: totals._sum.amount };
-  }
-
-  private async autoUpgradeVip(userId: number) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    const vipLevels = await this.prisma.vipLevel.findMany({ orderBy: { sortOrder: 'asc' } });
-
-    let targetVip = vipLevels[0];
-    for (const level of vipLevels) {
-      if (Number(user.totalDeposits) >= Number(level.pricePerGrade)) {
-        targetVip = level;
-      }
+};
+var __generator = (this && this.__generator) || function (thisArg, body) {
+    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g = Object.create((typeof Iterator === "function" ? Iterator : Object).prototype);
+    return g.next = verb(0), g["throw"] = verb(1), g["return"] = verb(2), typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
+    function verb(n) { return function (v) { return step([n, v]); }; }
+    function step(op) {
+        if (f) throw new TypeError("Generator is already executing.");
+        while (g && (g = 0, op[0] && (_ = 0)), _) try {
+            if (f = 1, y && (t = op[0] & 2 ? y["return"] : op[0] ? y["throw"] || ((t = y["return"]) && t.call(y), 0) : y.next) && !(t = t.call(y, op[1])).done) return t;
+            if (y = 0, t) op = [op[0] & 2, t.value];
+            switch (op[0]) {
+                case 0: case 1: t = op; break;
+                case 4: _.label++; return { value: op[1], done: false };
+                case 5: _.label++; y = op[1]; op = [0]; continue;
+                case 7: op = _.ops.pop(); _.trys.pop(); continue;
+                default:
+                    if (!(t = _.trys, t = t.length > 0 && t[t.length - 1]) && (op[0] === 6 || op[0] === 2)) { _ = 0; continue; }
+                    if (op[0] === 3 && (!t || (op[1] > t[0] && op[1] < t[3]))) { _.label = op[1]; break; }
+                    if (op[0] === 6 && _.label < t[1]) { _.label = t[1]; t = op; break; }
+                    if (t && _.label < t[2]) { _.label = t[2]; _.ops.push(op); break; }
+                    if (t[2]) _.ops.pop();
+                    _.trys.pop(); continue;
+            }
+            op = body.call(thisArg, _);
+        } catch (e) { op = [6, e]; y = 0; } finally { f = t = 0; }
+        if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
     }
-
-    if (targetVip.id !== user.vipLevelId) {
-      await this.prisma.user.update({ where: { id: userId }, data: { vipLevelId: targetVip.id } });
-    }
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ADMIN ORDERS
-// ═══════════════════════════════════════════════════════════════════════════════
-@ApiTags('Admin Orders')
-@ApiBearerAuth()
-@AdminAuth()
-@Controller('admin/orders')
-export class AdminOrdersController {
-  constructor(private prisma: PrismaService) {}
-
-  @Get()
-  async getOrders(@Query() q: any) {
-    const where: any = {};
-    if (q.orderNumber) where.orderNumber = { contains: q.orderNumber };
-    if (q.userId) where.userId = parseInt(q.userId);
-    if (q.status) where.status = q.status;
-
-    const [items, total] = await Promise.all([
-      this.prisma.order.findMany({
-        where,
-        include: {
-          user: { select: { phone: true, nickname: true } },
-          hotel: { select: { name: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        skip: q.page ? (parseInt(q.page) - 1) * 20 : 0,
-        take: 20,
-      }),
-      this.prisma.order.count({ where }),
-    ]);
-
-    const totals = await this.prisma.order.aggregate({
-      _sum: { transactionAmount: true, commission: true },
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+var client_1 = require("@prisma/client");
+var bcrypt = require("bcrypt");
+var prisma = new client_1.PrismaClient();
+function main() {
+    return __awaiter(this, void 0, void 0, function () {
+        var adminPassword, vipLevels, _i, vipLevels_1, vip, sampleHotels, _a, sampleHotels_1, hotel, existing, systemUser, _b, _c, contents, _d, contents_1, content;
+        var _e, _f;
+        return __generator(this, function (_g) {
+            switch (_g.label) {
+                case 0:
+                    console.log('🌱 Seeding database...');
+                    return [4 /*yield*/, bcrypt.hash(process.env.ADMIN_PASSWORD || 'admin123456', 12)];
+                case 1:
+                    adminPassword = _g.sent();
+                    return [4 /*yield*/, prisma.admin.upsert({
+                            where: { username: 'admin' },
+                            update: {},
+                            create: {
+                                username: process.env.ADMIN_USERNAME || 'admin',
+                                password: adminPassword,
+                                characterName: 'Super administrator, no assignment required',
+                                isEnabled: true,
+                            },
+                        })];
+                case 2:
+                    _g.sent();
+                    console.log('✅ Default admin created: admin');
+                    vipLevels = [
+                        {
+                            id: 1, name: 'VIP1', sortOrder: 1,
+                            dailyOrderVolume: 30, taskWheel: 3,
+                            amountLimit: 25, lowestProductPrice: 0, highestProductPrice: 0,
+                            upgradeRewards: 0, pricePerGrade: 25,
+                            minWithdrawal: 100, maxWithdrawal: 5000,
+                            minRecharge: 20, maxRecharge: 1000000,
+                            transactionFeeRate: 0, orderCommissionRate: 0.01,
+                            gradeSalary: 10,
+                        },
+                        {
+                            id: 2, name: 'VIP2', sortOrder: 2,
+                            dailyOrderVolume: 40, taskWheel: 3,
+                            amountLimit: 1500, lowestProductPrice: 0, highestProductPrice: 0,
+                            upgradeRewards: 0, pricePerGrade: 1500,
+                            minWithdrawal: 100, maxWithdrawal: 10000,
+                            minRecharge: 100, maxRecharge: 1000000,
+                            transactionFeeRate: 0, orderCommissionRate: 0.02,
+                            gradeSalary: 0,
+                        },
+                        {
+                            id: 3, name: 'VIP3', sortOrder: 3,
+                            dailyOrderVolume: 50, taskWheel: 5,
+                            amountLimit: 5000, lowestProductPrice: 0, highestProductPrice: 0,
+                            upgradeRewards: 0, pricePerGrade: 5000,
+                            minWithdrawal: 100, maxWithdrawal: 50000,
+                            minRecharge: 500, maxRecharge: 1000000,
+                            transactionFeeRate: 0, orderCommissionRate: 0.04,
+                            gradeSalary: 0,
+                        },
+                        {
+                            id: 4, name: 'VIP4', sortOrder: 4,
+                            dailyOrderVolume: 60, taskWheel: 6,
+                            amountLimit: 10000, lowestProductPrice: 0, highestProductPrice: 0,
+                            upgradeRewards: 0, pricePerGrade: 10000,
+                            minWithdrawal: 100, maxWithdrawal: 1000000,
+                            minRecharge: 500, maxRecharge: 1000000,
+                            transactionFeeRate: 0, orderCommissionRate: 0.05,
+                            gradeSalary: 0,
+                        },
+                    ];
+                    _i = 0, vipLevels_1 = vipLevels;
+                    _g.label = 3;
+                case 3:
+                    if (!(_i < vipLevels_1.length)) return [3 /*break*/, 6];
+                    vip = vipLevels_1[_i];
+                    return [4 /*yield*/, prisma.vipLevel.upsert({
+                            where: { id: vip.id },
+                            update: vip,
+                            create: vip,
+                        })];
+                case 4:
+                    _g.sent();
+                    _g.label = 5;
+                case 5:
+                    _i++;
+                    return [3 /*break*/, 3];
+                case 6:
+                    console.log('✅ VIP levels created: VIP1-VIP4');
+                    // ─── Site Settings ────────────────────────────────────────────────────────
+                    return [4 /*yield*/, prisma.siteSettings.upsert({
+                            where: { id: 1 },
+                            update: {},
+                            create: {
+                                id: 1,
+                                appName: 'Hotel Booking',
+                                defaultLanguage: 'en',
+                                timezone: 'UTC',
+                                openingTime: '09:00',
+                                closingTime: '23:58:59',
+                                withdrawalStartTime: '01:00',
+                                withdrawalEndTime: '17:00',
+                                registrationRewards: 0,
+                                rebateMultiplier: 0,
+                                level1CommissionRate: 0.30,
+                                level2CommissionRate: 0,
+                                level3CommissionRate: 0,
+                                level4CommissionRate: 0,
+                                level5CommissionRate: 0,
+                            },
+                        })];
+                case 7:
+                    // ─── Site Settings ────────────────────────────────────────────────────────
+                    _g.sent();
+                    console.log('✅ Site settings initialized');
+                    // ─── Customer Service Links ───────────────────────────────────────────────
+                    return [4 /*yield*/, prisma.customerServiceLink.upsert({
+                            where: { id: 1 },
+                            update: {},
+                            create: { id: 1, name: 'Tawk', url: 'https://tawk.to', isActive: true },
+                        })];
+                case 8:
+                    // ─── Customer Service Links ───────────────────────────────────────────────
+                    _g.sent();
+                    return [4 /*yield*/, prisma.customerServiceLink.upsert({
+                            where: { id: 2 },
+                            update: {},
+                            create: { id: 2, name: 'Telegram', url: 'https://t.me/support', isActive: true },
+                        })];
+                case 9:
+                    _g.sent();
+                    console.log('✅ Customer service links created');
+                    sampleHotels = [
+                        { name: 'Wilderness Hotel Inari', price: 315, picture: 'https://images.unsplash.com/photo-1542314831-068cd1dbfeeb?w=400' },
+                        { name: 'Alean Family Doville', price: 882, picture: 'https://images.unsplash.com/photo-1564501049412-61c2a3083791?w=400' },
+                        { name: 'Trezzini Palace Hotel', price: 774, picture: 'https://images.unsplash.com/photo-1551882547-ff40c63fe5fa?w=400' },
+                        { name: 'Akka Knibekaize Hostel', price: 669, picture: 'https://images.unsplash.com/photo-1520250497591-112f2f40a3f4?w=400' },
+                        { name: 'Arctic TreeHouse Hotel', price: 8510, picture: 'https://images.unsplash.com/photo-1571896349842-33c89424de2d?w=400' },
+                        { name: 'Hotel Chalpan', price: 475, picture: 'https://images.unsplash.com/photo-1566073771259-6a8506099945?w=400' },
+                        { name: 'Kakslauttanen Arctic Resort', price: 524, picture: 'https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?w=400' },
+                        { name: 'Golden Triangle Hotel', price: 1635, picture: 'https://images.unsplash.com/photo-1571003123894-1f0594d2b5d9?w=400' },
+                        { name: 'Grand Residenza Milano', price: 1240, picture: 'https://images.unsplash.com/photo-1521898284481-a5ec348cb555?w=400' },
+                        { name: 'Citrus Hotel', price: 893, picture: 'https://images.unsplash.com/photo-1630660664869-c9d3cc676880?w=400' },
+                    ];
+                    _a = 0, sampleHotels_1 = sampleHotels;
+                    _g.label = 10;
+                case 10:
+                    if (!(_a < sampleHotels_1.length)) return [3 /*break*/, 14];
+                    hotel = sampleHotels_1[_a];
+                    return [4 /*yield*/, prisma.hotel.findFirst({ where: { name: hotel.name } })];
+                case 11:
+                    existing = _g.sent();
+                    if (!!existing) return [3 /*break*/, 13];
+                    return [4 /*yield*/, prisma.hotel.create({ data: hotel })];
+                case 12:
+                    _g.sent();
+                    _g.label = 13;
+                case 13:
+                    _a++;
+                    return [3 /*break*/, 10];
+                case 14:
+                    console.log('✅ Sample hotels created');
+                    return [4 /*yield*/, prisma.user.findFirst({ where: { invitationCode: 'SYSTEM' } })];
+                case 15:
+                    systemUser = _g.sent();
+                    if (!!systemUser) return [3 /*break*/, 19];
+                    _c = (_b = prisma.user).create;
+                    _e = {};
+                    _f = {
+                        phone: 'system',
+                        nickname: 'System'
+                    };
+                    return [4 /*yield*/, bcrypt.hash('system-no-login', 12)];
+                case 16:
+                    _f.password = _g.sent();
+                    return [4 /*yield*/, bcrypt.hash('system-no-login', 12)];
+                case 17: return [4 /*yield*/, _c.apply(_b, [(_e.data = (_f.withdrawPassword = _g.sent(),
+                            _f.invitationCode = 'SYSTEM',
+                            _f.vipLevelId = 1,
+                            _f.status = 'DISABLED',
+                            _f),
+                            _e)])];
+                case 18:
+                    _g.sent();
+                    _g.label = 19;
+                case 19:
+                    console.log('✅ System invitation code: SYSTEM');
+                    contents = [
+                        { key: 'register_message', language: 'en', content: 'Congratulations, you have successfully registered! Welcome to Hotel Booking.' },
+                        { key: 'system_tips', language: 'en', content: 'If you do not get a response after a long time, please contact online customer service.' },
+                        { key: 'faq', language: 'en', content: '<h3>Deposit</h3><p>Each deposit needs to be submitted to customer service for assistance.</p><h3>Withdraw funds</h3><p>Before withdrawing, bind your withdrawal address first.</p>' },
+                        { key: 'nda', language: 'en', content: 'Platform members can use referral codes to invite others. Income is 30% of the commissions earned by downline participants.' },
+                        { key: 'about_us', language: 'en', content: 'Hotel Booking is a hotel affiliate commission platform.' },
+                    ];
+                    _d = 0, contents_1 = contents;
+                    _g.label = 20;
+                case 20:
+                    if (!(_d < contents_1.length)) return [3 /*break*/, 23];
+                    content = contents_1[_d];
+                    return [4 /*yield*/, prisma.multilingualContent.upsert({
+                            where: { key_language: { key: content.key, language: content.language } },
+                            update: {},
+                            create: content,
+                        })];
+                case 21:
+                    _g.sent();
+                    _g.label = 22;
+                case 22:
+                    _d++;
+                    return [3 /*break*/, 20];
+                case 23:
+                    console.log('✅ Default content created');
+                    console.log('\n🎉 Database seeded successfully!');
+                    console.log('─────────────────────────────────');
+                    console.log('Admin login: admin / admin123456');
+                    console.log('First user invitation code: SYSTEM');
+                    console.log('─────────────────────────────────');
+                    return [2 /*return*/];
+            }
+        });
     });
-
-    return {
-      items, total,
-      totalTransactionAmount: totals._sum.transactionAmount,
-      totalCommission: totals._sum.commission,
-    };
-  }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ADMIN VIP CONFIG
-// ═══════════════════════════════════════════════════════════════════════════════
-@ApiTags('Admin VIP')
-@ApiBearerAuth()
-@AdminAuth()
-@Controller('admin/vip')
-export class AdminVipController {
-  constructor(private prisma: PrismaService) {}
-
-  @Get()
-  async getVipLevels() {
-    return this.prisma.vipLevel.findMany({ orderBy: { sortOrder: 'asc' } });
-  }
-
-  @Post()
-  async createVipLevel(@Body() body: any) {
-    return this.prisma.vipLevel.create({ data: body });
-  }
-
-  @Put(':id')
-  async updateVipLevel(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
-    return this.prisma.vipLevel.update({ where: { id }, data: body });
-  }
-
-  @Delete(':id')
-  async deleteVipLevel(@Param('id', ParseIntPipe) id: number) {
-    return this.prisma.vipLevel.delete({ where: { id } });
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ADMIN HOTELS
-// ═══════════════════════════════════════════════════════════════════════════════
-@ApiTags('Admin Hotels')
-@ApiBearerAuth()
-@AdminAuth()
-@Controller('admin/hotels')
-export class AdminHotelsController {
-  constructor(private prisma: PrismaService) {}
-
-  @Get()
-  async getHotels(@Query() q: any) {
-    const where: any = {};
-    if (q.search) where.name = { contains: q.search, mode: 'insensitive' };
-
-    const [hotels, total] = await Promise.all([
-      this.prisma.hotel.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        skip: q.page ? (parseInt(q.page) - 1) * 20 : 0,
-        take: 20,
-      }),
-      this.prisma.hotel.count({ where }),
-    ]);
-
-    return { hotels, total };
-  }
-
-  @Post()
-  async createHotel(@Body() body: any) {
-    return this.prisma.hotel.create({ data: { name: body.name, picture: body.picture, price: body.price } });
-  }
-
-  @Put(':id')
-  async updateHotel(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
-    return this.prisma.hotel.update({ where: { id }, data: body });
-  }
-
-  @Delete(':id')
-  async deleteHotel(@Param('id', ParseIntPipe) id: number) {
-    return this.prisma.hotel.delete({ where: { id } });
-  }
-
-  @Post(':id/toggle')
-  async toggleHotel(@Param('id', ParseIntPipe) id: number, @Body() body: { isActive: boolean }) {
-    return this.prisma.hotel.update({ where: { id }, data: { isActive: body.isActive } });
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ADMIN SETTINGS
-// ═══════════════════════════════════════════════════════════════════════════════
-@ApiTags('Admin Settings')
-@ApiBearerAuth()
-@AdminAuth()
-@Controller('admin/settings')
-export class AdminSettingsController {
-  constructor(private prisma: PrismaService) {}
-
-  @Get('basic')
-  async getBasicSettings() {
-    return this.prisma.siteSettings.findFirst();
-  }
-
-  @Put('basic')
-  async updateBasicSettings(@Body() body: any) {
-    return this.prisma.siteSettings.upsert({
-      where: { id: 1 },
-      update: body,
-      create: { id: 1, ...body },
-    });
-  }
-
-  @Get('customer-service')
-  async getCustomerServiceLinks() {
-    return this.prisma.customerServiceLink.findMany();
-  }
-
-  @Post('customer-service')
-  async addCustomerServiceLink(@Body() body: { name: string; url: string }) {
-    return this.prisma.customerServiceLink.create({ data: body });
-  }
-
-  @Put('customer-service/:id')
-  async updateCustomerServiceLink(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
-    return this.prisma.customerServiceLink.update({ where: { id }, data: body });
-  }
-
-  @Delete('customer-service/:id')
-  async deleteCustomerServiceLink(@Param('id', ParseIntPipe) id: number) {
-    return this.prisma.customerServiceLink.delete({ where: { id } });
-  }
-
-  @Get('merchant-banks')
-  async getMerchantBanks() {
-    return this.prisma.merchantBankAccount.findMany();
-  }
-
-  @Post('merchant-banks')
-  async addMerchantBank(@Body() body: any) {
-    return this.prisma.merchantBankAccount.create({ data: body });
-  }
-
-  @Put('merchant-banks/:id')
-  async updateMerchantBank(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
-    return this.prisma.merchantBankAccount.update({ where: { id }, data: body });
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ADMIN CONTENT
-// ═══════════════════════════════════════════════════════════════════════════════
-@ApiTags('Admin Content')
-@ApiBearerAuth()
-@AdminAuth()
-@Controller('admin/content')
-export class AdminContentController {
-  constructor(private prisma: PrismaService) {}
-
-  @Get()
-  async getContent(@Query('language') language = 'en') {
-    return this.prisma.multilingualContent.findMany({ where: { language } });
-  }
-
-  @Put()
-  async updateContent(@Body() body: { key: string; language: string; content: string; contentType?: string }) {
-    return this.prisma.multilingualContent.upsert({
-      where: { key_language: { key: body.key, language: body.language } },
-      update: { content: body.content },
-      create: body,
-    });
-  }
-
-  @Get('agreements')
-  async getAgreements() {
-    return this.prisma.registrationAgreement.findMany();
-  }
-
-  @Put('agreements')
-  async updateAgreement(@Body() body: { language: string; content: string }) {
-    return this.prisma.registrationAgreement.upsert({
-      where: { language: body.language },
-      update: { content: body.content },
-      create: body,
-    });
-  }
-
-  @Get('app-scrolling')
-  async getAppScrolling() {
-    return this.prisma.appScrollItem.findMany({ orderBy: { createdAt: 'asc' } });
-  }
-
-  @Post('app-scrolling')
-  async addAppScrollItem(@Body() body: { name: string; picture: string }) {
-    return this.prisma.appScrollItem.create({ data: body });
-  }
-
-  @Put('app-scrolling/:id')
-  async updateAppScrollItem(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
-    return this.prisma.appScrollItem.update({ where: { id }, data: body });
-  }
-
-  @Delete('app-scrolling/:id')
-  async deleteAppScrollItem(@Param('id', ParseIntPipe) id: number) {
-    return this.prisma.appScrollItem.delete({ where: { id } });
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ADMIN ADMINISTRATORS (manage admin accounts)
-// ═══════════════════════════════════════════════════════════════════════════════
-@ApiTags('Admin Administrators')
-@ApiBearerAuth()
-@AdminAuth()
-@Controller('admin/administrators')
-export class AdminAdministratorsController {
-  constructor(private prisma: PrismaService) {}
-
-  @Get()
-  async getAdmins() {
-    return this.prisma.admin.findMany({
-      include: { role: true },
-      select: {
-        id: true, username: true, characterName: true, frontendUserId: true,
-        isEnabled: true, lastLoginAt: true, remark: true, role: true, createdAt: true,
-      },
-    });
-  }
-
-  @Post()
-  async createAdmin(@Body() body: any) {
-    const hashedPassword = await bcrypt.hash(body.password, 12);
-    return this.prisma.admin.create({
-      data: {
-        username: body.username,
-        password: hashedPassword,
-        characterName: body.characterName,
-        remark: body.remark,
-        roleId: body.roleId,
-      },
-    });
-  }
-
-  @Put(':id')
-  async updateAdmin(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
-    const data: any = { characterName: body.characterName, remark: body.remark, roleId: body.roleId };
-    if (body.password) data.password = await bcrypt.hash(body.password, 12);
-    return this.prisma.admin.update({ where: { id }, data });
-  }
-
-  @Post(':id/toggle')
-  async toggleAdmin(@Param('id', ParseIntPipe) id: number, @Body() body: { enabled: boolean }) {
-    return this.prisma.admin.update({ where: { id }, data: { isEnabled: body.enabled } });
-  }
-
-  // Roles
-  @Get('roles')
-  async getRoles() {
-    return this.prisma.adminRole.findMany({ include: { _count: { select: { admins: true } } } });
-  }
-
-  @Post('roles')
-  async createRole(@Body() body: { name: string; permissions: any }) {
-    return this.prisma.adminRole.create({ data: body });
-  }
-
-  @Put('roles/:id')
-  async updateRole(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
-    return this.prisma.adminRole.update({ where: { id }, data: body });
-  }
-}
+main()
+    .catch(console.error)
+    .finally(function () { return prisma.$disconnect(); });

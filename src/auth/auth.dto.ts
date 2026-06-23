@@ -1,15 +1,9 @@
-import { IsString, IsNotEmpty, MinLength, MaxLength, Matches } from 'class-validator';
+import { Injectable, OnModuleInit } from '@nestjs/common';
+import { PrismaClient } from '@prisma/client';
 
-export class LoginDto {
-  @IsString() @IsNotEmpty() phone: string;
-  @IsString() @MinLength(6) password: string;
-}
-
-export class RegisterDto {
-  @IsString() @IsNotEmpty() nickname: string;
-  @IsString() @IsNotEmpty() phone: string;
-  @IsString() @MinLength(6) password: string;
-  @IsString() @MinLength(6) confirmPassword: string;
-  @IsString() @MinLength(6) @MaxLength(6) @Matches(/^\d{6}$/) securityPin: string;
-  @IsString() @IsNotEmpty() invitationCode: string;
+@Injectable()
+export class PrismaService extends PrismaClient implements OnModuleInit {
+  async onModuleInit() {
+    await this.$connect();
+  }
 }

@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
-import { OrdersController } from './orders.controller';
-import { OrdersService } from './orders.service';
+import { UsersController } from './users.controller';
 
-@Module({ controllers: [OrdersController], providers: [OrdersService], exports: [OrdersService] })
-export class OrdersModule {}
+@Module({ controllers: [UsersController] })
+export class UsersModule {}

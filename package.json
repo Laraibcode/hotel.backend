@@ -1,52 +1,52 @@
-import { Injectable, BadRequestException, UnauthorizedException, ConflictException } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
-import * as bcrypt from 'bcrypt';
-import { PrismaService } from '../prisma/prisma.service';
-import { LoginDto, RegisterDto } from './auth.dto';
-
-@Injectable()
-export class AuthService {
-  constructor(private prisma: PrismaService, private jwtService: JwtService) {}
-
-  async register(dto: RegisterDto) {
-    if (dto.password !== dto.confirmPassword) throw new BadRequestException('Passwords do not match');
-    const existing = await this.prisma.user.findUnique({ where: { phone: dto.phone } });
-    if (existing) throw new ConflictException('Phone number already registered');
-    const referrer = await this.prisma.user.findUnique({ where: { invitationCode: dto.invitationCode } });
-    if (!referrer) throw new BadRequestException('Invalid invitation code');
-    const hashedPassword = await bcrypt.hash(dto.password, 12);
-    const hashedPin = await bcrypt.hash(dto.securityPin, 12);
-    const newInvitationCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-    const defaultVip = await this.prisma.vipLevel.findFirst({ orderBy: { sortOrder: 'asc' } });
-    if (!defaultVip) throw new BadRequestException('System not configured. Contact admin.');
-    const user = await this.prisma.user.create({
-      data: {
-        phone: dto.phone, nickname: dto.nickname, password: hashedPassword,
-        withdrawPassword: hashedPin, invitationCode: newInvitationCode,
-        referrerId: referrer.id, vipLevelId: defaultVip.id,
-      },
-      select: { id: true, phone: true, nickname: true, invitationCode: true, creditScore: true, vipLevelId: true },
-    });
-    const token = this.jwtService.sign({ sub: user.id, phone: user.phone });
-    return { user, token };
-  }
-
-  async login(dto: LoginDto) {
-    const user = await this.prisma.user.findUnique({ where: { phone: dto.phone }, include: { vipLevel: true } });
-    if (!user) throw new UnauthorizedException('Invalid credentials');
-    if (user.status === 'BANNED') throw new UnauthorizedException('Account is banned');
-    if (user.status === 'DISABLED') throw new UnauthorizedException('Account is disabled');
-    const valid = await bcrypt.compare(dto.password, user.password);
-    if (!valid) throw new UnauthorizedException('Invalid credentials');
-    await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
-    const token = this.jwtService.sign({ sub: user.id, phone: user.phone });
-    return {
-      token,
-      user: {
-        id: user.id, phone: user.phone, nickname: user.nickname,
-        invitationCode: user.invitationCode, creditScore: user.creditScore,
-        balance: user.balance, vipLevel: user.vipLevel, dailyOrderCount: user.dailyOrderCount,
-      },
-    };
+{
+  "name": "hotel-booking-backend",
+  "version": "1.0.0",
+  "description": "Hotel Booking Platform Backend API",
+  "author": "",
+  "private": true,
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "nest build",
+    "start": "node dist/main",
+    "start:dev": "nest start --watch",
+    "start:debug": "nest start --debug --watch",
+    "start:prod": "node dist/main",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:seed": "ts-node prisma/seed.ts",
+    "prisma:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.0.0",
+    "@nestjs/core": "^10.0.0",
+    "@nestjs/jwt": "^10.2.0",
+    "@nestjs/passport": "^10.0.3",
+    "@nestjs/platform-express": "^10.0.0",
+    "@nestjs/swagger": "^7.3.0",
+    "@nestjs/throttler": "^5.1.2",
+    "@prisma/client": "^5.10.0",
+    "bcrypt": "^5.1.1",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "passport": "^0.7.0",
+    "passport-jwt": "^4.0.1",
+    "reflect-metadata": "^0.2.0",
+    "rxjs": "^7.8.1",
+    "multer": "^1.4.5-lts.1",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.0.0",
+    "@nestjs/testing": "^10.0.0",
+    "@types/bcrypt": "^5.0.2",
+    "@types/express": "^4.17.21",
+    "@types/multer": "^1.4.11",
+    "@types/node": "^20.11.0",
+    "@types/passport-jwt": "^4.0.1",
+    "@types/uuid": "^9.0.8",
+    "prisma": "^5.10.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
   }
 }
